@@ -1,0 +1,120 @@
+name: Docker Publish
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.meta.outputs.changed }}
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      previous: ${{ steps.meta.outputs.previous }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - name: Resolve release version
+        id: meta
+        run: node .github/scripts/release-version.mjs
+
+  publish:
+    needs: version
+    if: needs.version.outputs.changed == 'true'
+    name: Publish image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push versioned image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ needs.version.outputs.image }}:${{ needs.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: [version, publish]
+    if: needs.version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      IMAGE: ${{ needs.version.outputs.image }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - name: Recheck version before publishing the release
+        id: current
+        run: node .github/scripts/release-version.mjs
+      - name: Verify the prepared version is still current
+        env:
+          CURRENT_VERSION: ${{ steps.current.outputs.version }}
+        run: test "$CURRENT_VERSION" = "$VERSION"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        if: steps.current.outputs.changed == 'true'
+      - name: Log in to GitHub Container Registry
+        if: steps.current.outputs.changed == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote the published image to latest
+        if: steps.current.outputs.changed == 'true'
+        run: docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${VERSION}"
+      - name: Create tag and GitHub release
+        if: steps.current.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          PREVIOUS_TAG: ${{ needs.version.outputs.previous }}
+        run: |
+          args=()
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            args+=(--notes-start-tag "$PREVIOUS_TAG")
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          printf '## Docker image\n\n```sh\ndocker pull %s:%s\n```\n' "$IMAGE" "$VERSION" > "$notes"
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
+            --title "Muxly $RELEASE_TAG" --generate-notes --notes-file "$notes" "${args[@]}"
