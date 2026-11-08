@@ -40,16 +40,7 @@ impl HandBrake {
             .map_err(|e| format!("cannot run HandBrakeCLI: {e}"))?;
         let text =
             String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr);
-        let mut category = String::new();
-        let mut presets = Vec::new();
-        for line in text.lines() {
-            if let Some(name) = line.strip_prefix("    ").filter(|n| !n.starts_with(' ')) {
-                presets.push(format!("{category}/{}", name.trim_end()));
-            } else if !line.starts_with([' ', '[']) && line.ends_with('/') {
-                category = line.trim_end_matches('/').to_string();
-            }
-        }
-        Ok(presets)
+        Ok(parse_preset_list(&text))
     }
 
     pub fn encode(
@@ -165,4 +156,23 @@ impl HandBrake {
         writeln!(file, "\n===== {} =====", input.display())?;
         Ok(file)
     }
+}
+
+fn parse_preset_list(text: &str) -> Vec<String> {
+    let mut folders: Vec<&str> = Vec::new();
+    let mut presets = Vec::new();
+    for line in text.lines() {
+        let name = line.trim_start_matches(' ');
+        let indent = line.len() - name.len();
+        let name = name.trim_end();
+        if name.is_empty() || indent % 4 != 0 || indent / 4 > folders.len() {
+            continue;
+        }
+        folders.truncate(indent / 4);
+        match name.strip_suffix('/') {
+            Some(folder) => folders.push(folder),
+            None => presets.push([&folders[..], &[name]].concat().join("/")),
+        }
+    }
+    presets
 }
