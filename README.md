@@ -53,19 +53,29 @@ AMD GPU, writing the result to another folder.**
 services:
   muxly:
     image: ghcr.io/hidden-space-xyz/muxly:latest
-    restart: unless-stopped
+    container_name: muxly
+    restart: always
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - KILL
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
     environment:
-      PUID: 1000
-      PGID: 1000
-      TZ: Europe/Madrid
-      MUXLY_PRESET: "General/Very Fast 1080p30"
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Madrid
+      - MUXLY_PRESET=General/Very Fast 1080p30
+      - MUXLY_FORMAT=mp4
+      - MUXLY_SOURCE_ACTION=keep
     volumes:
-      - ./config:/config
+      - /path/to/config:/config
       - /path/to/input:/watch
       - /path/to/output:/output
-    security_opt: [no-new-privileges:true]
-    cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, KILL, SETGID, SETUID]
 ```
 
 ```bash
