@@ -34,14 +34,20 @@ impl Candidate {
     }
 }
 
-pub fn candidates(root: &Path) -> Vec<Candidate> {
-    let mut found = Vec::new();
-    walk(root, &mut found);
-    found.sort_by_key(|c| c.modified);
+#[derive(Default)]
+pub struct Scan {
+    pub videos: Vec<Candidate>,
+    pub others: Vec<Candidate>,
+}
+
+pub fn scan(root: &Path, with_others: bool) -> Scan {
+    let mut found = Scan::default();
+    walk(root, with_others, &mut found);
+    found.videos.sort_by_key(|c| c.modified);
     found
 }
 
-fn walk(dir: &Path, found: &mut Vec<Candidate>) {
+fn walk(dir: &Path, with_others: bool, found: &mut Scan) {
     let Ok(entries) = fs::read_dir(dir) else {
         warn!("cannot read '{}'", dir.display());
         return;
@@ -61,7 +67,7 @@ fn walk(dir: &Path, found: &mut Vec<Candidate>) {
         };
         if is_source {
             match snapshot(&path) {
-                Ok((size, modified)) if size > 0 => found.push(Candidate {
+                Ok((size, modified)) if size > 0 => found.videos.push(Candidate {
                     path,
                     size,
                     modified,
@@ -70,7 +76,16 @@ fn walk(dir: &Path, found: &mut Vec<Candidate>) {
                 Err(e) => warn!("cannot read '{}': {e}", path.display()),
             }
         } else if kind.is_dir() {
-            walk(&path, found);
+            walk(&path, with_others, found);
+        } else if with_others
+            && kind.is_file()
+            && let Ok((size, modified)) = snapshot(&path)
+        {
+            found.others.push(Candidate {
+                path,
+                size,
+                modified,
+            });
         }
     }
 }
@@ -139,8 +154,13 @@ impl Tracker {
         self.blocked.remove(path);
     }
 
-    pub fn keep_only(&mut self, candidates: &[Candidate]) {
-        let present: HashSet<&Path> = candidates.iter().map(|c| c.path.as_path()).collect();
+    pub fn keep_only(&mut self, scan: &Scan) {
+        let present: HashSet<&Path> = scan
+            .videos
+            .iter()
+            .chain(&scan.others)
+            .map(|c| c.path.as_path())
+            .collect();
         self.seen.retain(|path, _| present.contains(path.as_path()));
         self.blocked.retain(|path| present.contains(path.as_path()));
     }

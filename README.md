@@ -41,9 +41,9 @@ AMD GPU, writing the result to another folder.**
 - **⚡ Hardware Encoding** — Intel QSV, NVIDIA NVENC and NVDEC, and AMD VCE are built in; the preset decides which encoder runs
 - **🧩 Your Own Presets** — Use a built-in preset or import the ones you exported from the HandBrake desktop app
 - **⏳ Waits for Complete Copies** — A file is processed only after 10 seconds without changing, so half-copied files are left alone
-- **📂 Mirrored Folders** — Subfolders under the watched folder are recreated in the output folder
+- **📂 Flat or Mirrored Output** — Converted files go straight into the output folder, or under the same subfolders as their originals
 - **🧾 Conversion History** — Every conversion is recorded as done or failed, so restarts never repeat work
-- **🧹 Optional Cleanup** — Delete each original, and the folders it leaves empty, once its conversion succeeds
+- **🧹 Optional Cleanup** — Delete each original once it is converted, and every file that is not a video except the extensions you keep, along with the folders they leave empty
 - **👤 Runs as Your User** — Files are written as `PUID:PGID`, which joins the GPU device groups automatically
 - **🪶 Tiny Watcher** — A single Rust binary with one dependency: no GUI, no web server, no database
 
@@ -71,7 +71,10 @@ services:
       - TZ=Europe/Madrid
       - MUXLY_PRESET=General/Very Fast 1080p30
       - MUXLY_FORMAT=mp4
+      - MUXLY_OUTPUT_LAYOUT=flat
       - MUXLY_SOURCE_ACTION=keep
+      - MUXLY_OTHER_ACTION=keep
+      - MUXLY_OTHER_EXCEPTIONS=srt,rar,7z
     volumes:
       - /path/to/config:/config
       - /path/to/input:/watch
@@ -87,7 +90,7 @@ docker compose logs -f muxly
 > The container must start as root, so don't set `user:`: it switches to `PUID:PGID` by itself. The added
 > capabilities are only what that needs: taking ownership of `/config`, switching user, and letting `tini`
 > forward `docker stop` to the watcher. `/watch` and `/output` must exist and `/output` must be writable by
-> `PUID:PGID`, as must `/watch` when sources are deleted.
+> `PUID:PGID`, as must `/watch` when sources or other files are deleted.
 
 To encode on the GPU, see [Hardware Encoding](#-hardware-encoding).
 
@@ -96,30 +99,40 @@ To encode on the GPU, see [Hardware Encoding](#-hardware-encoding).
 - **🔍 Scan** — Every 10 seconds Muxly looks for videos under `/watch` (`mkv mp4 m4v avi mov wmv flv webm ts m2ts mts mpg mpeg vob ogv 3gp iso`), oldest first. Names starting with `.` are ignored
 - **💿 Discs** — ISO images and folders containing `VIDEO_TS` or `BDMV` are treated as one disc, and only their main title is converted
 - **⏳ Wait** — A video is picked up once its size and modification time have stayed the same for 10 seconds
-- **🎞️ Convert** — One video at a time, to `/output` under the same relative path with the new extension. HandBrake writes into a hidden `/output/.muxly-tmp` folder and the finished file is moved into place
-- **🛡️ Never Overwrite** — If the output file already exists, the video waits in `/watch` until that name is free
+- **🎞️ Convert** — One video at a time, with the new extension, straight into `/output`, or under the same relative path with `MUXLY_OUTPUT_LAYOUT=mirror`. HandBrake writes into a hidden `/output/.muxly-tmp` folder and the finished file is moved into place
+- **🛡️ Never Overwrite** — If the output file already exists, the video waits in `/watch` until that name is free. With the flat layout, videos with the same name in different folders take turns this way
 - **🔁 Retry on Change** — A video that changes while it is being converted is converted again from scratch
 - **🧾 Record** — The result is written to `history.tsv`. A video in the history is skipped until it changes, or until you delete its line
-- **🧹 Clean Up** — With `MUXLY_SOURCE_ACTION=delete`, the original and the folders it leaves empty under `/watch` are removed after a successful conversion
+- **🧹 Clean Up** — With `MUXLY_SOURCE_ACTION=delete`, the original is removed after a successful conversion. With `MUXLY_OTHER_ACTION=delete`, every other file under `/watch` is removed once it has stayed the same for 10 seconds, except the extensions in `MUXLY_OTHER_EXCEPTIONS`, hidden files, symbolic links and the contents of discs. The folders either one leaves empty are removed too, up to `/watch`
 
 On `docker stop`, the conversion in progress is cancelled and its partial file is discarded; it starts over on
 the next run.
 
 ## ⚙️ Configuration
 
-| Variable              | Values              | Default                     | Effect                                                                       |
-| --------------------- | ------------------- | --------------------------- | ---------------------------------------------------------------------------- |
-| `PUID` / `PGID`       | User and group IDs  | `1000`                      | User and group Muxly runs as; the groups of the `/dev/dri` devices are added |
-| `TZ`                  | IANA time zone      | `Etc/UTC`                   | Container time zone, used by the timestamps in `logs/handbrake.log`          |
-| `MUXLY_PRESET`        | `<category>/<name>` | `General/Very Fast 1080p30` | HandBrake preset, given with its category or by its name alone               |
-| `MUXLY_FORMAT`        | `mp4`, `mkv`        | `mp4`                       | Container format of the converted files                                      |
-| `MUXLY_SOURCE_ACTION` | `keep`, `delete`    | `keep`                      | What happens to the original after a successful conversion                   |
+| Variable                 | Values              | Default                     | Effect                                                                       |
+| ------------------------ | ------------------- | --------------------------- | ---------------------------------------------------------------------------- |
+| `PUID` / `PGID`          | User and group IDs  | `1000`                      | User and group Muxly runs as; the groups of the `/dev/dri` devices are added |
+| `TZ`                     | IANA time zone      | `Etc/UTC`                   | Container time zone, used by the timestamps in `logs/handbrake.log`          |
+| `MUXLY_PRESET`           | `<category>/<name>` | `General/Very Fast 1080p30` | HandBrake preset, given with its category or by its name alone               |
+| `MUXLY_FORMAT`           | `mp4`, `mkv`        | `mp4`                       | Container format of the converted files                                      |
+| `MUXLY_OUTPUT_LAYOUT`    | `flat`, `mirror`    | `flat`                      | `mirror` keeps the subfolders of `/watch` in `/output`; `flat` drops them    |
+| `MUXLY_SOURCE_ACTION`    | `keep`, `delete`    | `keep`                      | What happens to the original after a successful conversion                   |
+| `MUXLY_OTHER_ACTION`     | `keep`, `delete`    | `keep`                      | What happens to the files under `/watch` that are not videos                 |
+| `MUXLY_OTHER_EXCEPTIONS` | Extension list      | None                        | Extensions kept by `MUXLY_OTHER_ACTION=delete`, such as `srt,rar,7z`         |
 
 The preset is checked at startup, and Muxly refuses to start with one that doesn't exist. List them with:
 
 ```bash
 docker run --rm ghcr.io/hidden-space-xyz/muxly HandBrakeCLI --preset-list
 ```
+
+> [!WARNING]
+> `MUXLY_OTHER_ACTION=delete` permanently deletes every file under `/watch` that Muxly does not convert,
+> including audio, images and archives, unless its extension is in `MUXLY_OTHER_EXCEPTIONS`. Exceptions are
+> separated by commas or spaces, ignore case and match the end of the name, so `rar` also keeps
+> `movie.part1.rar` and `tar.gz` works. An unfinished download with its own extension, such as `.part`, is
+> deleted too if it stops changing for 10 seconds; add it to the exceptions if that can happen.
 
 ### Files in `/config`
 

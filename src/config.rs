@@ -7,7 +7,10 @@ pub struct Config {
     pub config_dir: PathBuf,
     pub preset: String,
     pub extension: &'static str,
+    pub mirror_folders: bool,
     pub delete_source: bool,
+    pub delete_other: bool,
+    pub other_exceptions: Vec<String>,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -32,6 +35,14 @@ fn choice(name: &str, options: [&'static str; 2]) -> Result<&'static str, String
         })
 }
 
+fn extensions(name: &str) -> Vec<String> {
+    let raw = var(name).unwrap_or_default();
+    raw.split(|c: char| c == ',' || c.is_whitespace())
+        .map(|e| e.trim_start_matches('.').to_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect()
+}
+
 fn writable(dir: &Path) -> io::Result<()> {
     let probe = dir.join(format!(".muxly-{}", std::process::id()));
     fs::File::create_new(&probe)?;
@@ -46,13 +57,26 @@ impl Config {
             config_dir: "/config".into(),
             preset: var("PRESET").unwrap_or("General/Very Fast 1080p30".into()),
             extension: choice("FORMAT", ["mp4", "mkv"])?,
+            mirror_folders: choice("OUTPUT_LAYOUT", ["flat", "mirror"])? == "mirror",
             delete_source: choice("SOURCE_ACTION", ["keep", "delete"])? == "delete",
+            delete_other: choice("OTHER_ACTION", ["keep", "delete"])? == "delete",
+            other_exceptions: extensions("OTHER_EXCEPTIONS"),
+        })
+    }
+
+    pub fn is_exception(&self, path: &Path) -> bool {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let name = name.to_lowercase();
+        self.other_exceptions.iter().any(|extension| {
+            name.strip_suffix(extension.as_str())
+                .is_some_and(|stem| stem.len() > 1 && stem.ends_with('.'))
         })
     }
 
     pub fn check_paths(&self) -> Result<(), String> {
+        let deletes = self.delete_source || self.delete_other;
         for (path, kind, must_write) in [
-            (&self.watch_dir, "watch", self.delete_source),
+            (&self.watch_dir, "watch", deletes),
             (&self.output_dir, "output", true),
         ] {
             if !path.is_dir() {

@@ -83,12 +83,22 @@ fn run() -> Result<(), String> {
             config.preset
         ));
     }
+    let other = match (config.delete_other, config.other_exceptions.as_slice()) {
+        (false, _) => "keep".to_string(),
+        (true, []) => "delete".to_string(),
+        (true, kept) => format!("delete except {}", kept.join(", ")),
+    };
     info!(
-        "'{}' -> '{}' with '{}' as {}, source: {}",
+        "'{}' -> '{}' with '{}' as {}, layout: {}, source: {}, other files: {other}",
         config.watch_dir.display(),
         config.output_dir.display(),
         config.preset,
         config.extension,
+        if config.mirror_folders {
+            "mirror"
+        } else {
+            "flat"
+        },
         if config.delete_source {
             "delete"
         } else {
@@ -119,10 +129,11 @@ fn poll(
     history: &mut History,
     tracker: &mut Tracker,
 ) -> bool {
-    let candidates = watch::candidates(&config.watch_dir);
-    tracker.keep_only(&candidates);
+    let scan = watch::scan(&config.watch_dir, config.delete_other);
+    tracker.keep_only(&scan);
+    delete_others(config, &scan.others, tracker);
 
-    for candidate in &candidates {
+    for candidate in &scan.videos {
         let fingerprint = candidate.fingerprint();
         if history.contains(fingerprint) || !tracker.is_stable(candidate) {
             continue;
@@ -131,11 +142,9 @@ fn poll(
             .path
             .strip_prefix(&config.watch_dir)
             .unwrap_or(&candidate.path);
-        let target = config.output_dir.join(output_name(
-            relative,
-            candidate.path.is_dir(),
-            config.extension,
-        ));
+        let target = config
+            .output_dir
+            .join(output_name(relative, candidate.path.is_dir(), config));
         if target.exists() {
             if tracker.block(&candidate.path) {
                 warn!(
@@ -265,28 +274,59 @@ fn handle_source(config: &Config, source: &Path, relative: &Path) {
     match removed {
         Ok(()) => {
             info!("deleted the source '{}'", relative.display());
-            for dir in source
-                .ancestors()
-                .skip(1)
-                .take_while(|d| *d != config.watch_dir && d.starts_with(&config.watch_dir))
-            {
-                if fs::remove_dir(dir).is_err() {
-                    break;
-                }
-            }
+            remove_empty_parents(&config.watch_dir, source);
         }
         Err(e) => error!("cannot delete the source '{}': {e}", relative.display()),
     }
 }
 
-fn output_name(relative: &Path, is_folder: bool, extension: &str) -> PathBuf {
+fn delete_others(config: &Config, others: &[Candidate], tracker: &mut Tracker) {
+    for file in others {
+        if config.is_exception(&file.path) || !tracker.is_stable(file) {
+            continue;
+        }
+        let relative = file
+            .path
+            .strip_prefix(&config.watch_dir)
+            .unwrap_or(&file.path);
+        match fs::remove_file(&file.path) {
+            Ok(()) => {
+                info!("deleted '{}'", relative.display());
+                remove_empty_parents(&config.watch_dir, &file.path);
+            }
+            Err(e) => {
+                if tracker.block(&file.path) {
+                    error!("cannot delete '{}': {e}", relative.display());
+                }
+            }
+        }
+    }
+}
+
+fn remove_empty_parents(root: &Path, path: &Path) {
+    for dir in path
+        .ancestors()
+        .skip(1)
+        .take_while(|d| *d != root && d.starts_with(root))
+    {
+        if fs::remove_dir(dir).is_err() {
+            break;
+        }
+    }
+}
+
+fn output_name(relative: &Path, is_folder: bool, config: &Config) -> PathBuf {
+    let relative = match relative.file_name() {
+        Some(name) if !config.mirror_folders => Path::new(name),
+        _ => relative,
+    };
     let mut name = if is_folder {
         relative.as_os_str().to_owned()
     } else {
         relative.with_extension("").into_os_string()
     };
     name.push(".");
-    name.push(extension);
+    name.push(config.extension);
     name.into()
 }
 
